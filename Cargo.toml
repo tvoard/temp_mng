@@ -1,0 +1,27 @@
+[package]
+name = "generic_admin_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "sqlite", "macros", "chrono", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenv = "0.15"
+bcrypt = "0.17.0"
+anyhow = "1.0"
+thiserror = "2.0.12"
+chrono = { version = "0.4", features = ["serde"] }
+utoipa = { version = "5.3.1", features = ["actix_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9.0.1", features = ["actix-web"] }
+jsonwebtoken = "9" # JWT 라이브러리 추가
+validator = { version = "0.20.0", features = ["derive"] } # 입력 유효성 검사
+actix-cors = "0.7" # CORS 미들웨어
+tracing = "0.1" # 향상된 로깅 (log 대신 사용 가능)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3.31" # 쿼리 파라미터 파싱 (복잡한 필터링/정렬용)
+
+[dev-dependencies] # 테스트용 의존성
+actix-rt = "2"
