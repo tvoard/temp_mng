@@ -1,22 +1,21 @@
+use crate::dto::permission::PermissionResponse;
 use crate::{
-    dtos::{
+    dto::{
         common::ListQueryParams,
-        menu::MenuResponse,             // 메뉴 목록 반환용
-        permission::PermissionResponse, // 권한 목록 반환용
         user_type::{CreateUserTypeRequest, UpdateUserTypeRequest, UserTypeResponse},
     },
     errors::AppError,
-    middleware::auth::{AuthenticatedUser, RequirePermission}, // 권한 검사
-    models::{MenuItem, Permission, UserType},
+    middleware::auth::AuthenticatedUser, // 권한 검사
+    models::{Permission, UserType},
 };
 use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
-use sqlx::{Arguments, Row, SqlitePool};
+use sqlx::Arguments;
+use sqlx::SqlitePool;
 use utoipa;
 use validator::Validate;
 
 /// Create a User Type (Role)
-/// Requires 'user_type:create' permission.
-#[utoipa::path( /* ... Utoipa 문서 어노테이션 ... */ tag = "User Type Management")]
+#[utoipa::path(tag = "User Type Management")]
 #[post("")]
 async fn create_user_type(
     pool: web::Data<SqlitePool>,
@@ -50,11 +49,11 @@ async fn create_user_type(
 
 /// Get list of User Types
 /// Requires 'user_type:read' permission.
-#[utoipa::path( /* ... */ params(ListQueryParams), tag = "User Type Management")]
+#[utoipa::path(params(ListQueryParams), tag = "User Type Management")]
 #[get("")]
 async fn get_user_types(
     pool: web::Data<SqlitePool>,
-    _user: AuthenticatedUser, // TODO: RequirePermission("user_type:read") 적용
+    _user: AuthenticatedUser,
     query: web::Query<ListQueryParams>,
 ) -> Result<impl Responder, AppError> {
     let limit = query.get_limit();
@@ -62,24 +61,18 @@ async fn get_user_types(
     let allowed_sort_columns = ["id", "name", "created_at", "updated_at"];
     let order_by = query.get_order_by(&allowed_sort_columns);
 
-    // 검색 기능 추가 시 WHERE 절 동적 생성 필요 (user.rs 핸들러 참고)
     let query_str = format!(
-        "SELECT * FROM user_type ORDER BY {} LIMIT ? OFFSET ?",
-        order_by
+        "SELECT * FROM user_type ORDER BY {} LIMIT {} OFFSET {}",
+        order_by, limit, offset
     );
 
-    let user_types = sqlx::query_as_with::<_, UserType, _>(
-        &query_str,
-        sqlx::sqlite::SqliteArguments::default()
-            .add(limit)
-            .add(offset),
-    )
-    .fetch_all(pool.get_ref())
-    .await?;
+    let user_types =
+        sqlx::query_as_with::<_, UserType, _>(&query_str, sqlx::sqlite::SqliteArguments::default())
+            .fetch_all(pool.get_ref())
+            .await?;
 
     let response: Vec<UserTypeResponse> =
         user_types.into_iter().map(UserTypeResponse::from).collect();
-    // TODO: 총 개수 포함한 페이지네이션 응답 구조 사용
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -120,7 +113,6 @@ async fn update_user_type(
         args.add(name);
     }
     if req.description.is_some() {
-        // None이면 업데이트 안 함, Some(None)이면 NULL로 업데이트 구분 필요시 DTO 수정
         set_clauses.push("description = ?");
         args.add(req.description.as_ref()); // Option<&String> -> Option<&str> (sqlx가 처리)
     }
@@ -132,7 +124,7 @@ async fn update_user_type(
 
     args.add(type_id); // WHERE 절의 id
     let query_str = format!(
-        "UPDATE user_type SET {} WHERE id = ?",
+        "UPDATE user_type SET {} WHERE id =?",
         set_clauses.join(", ")
     );
 
@@ -147,7 +139,7 @@ async fn update_user_type(
             } else {
                 // 업데이트된 정보 다시 조회해서 반환
                 let updated_type =
-                    sqlx::query_as!(UserType, "SELECT * FROM user_type WHERE id = ?", type_id)
+                    sqlx::query_as!(UserType, "SELECT * FROM user_type WHERE id =?", type_id)
                         .fetch_one(pool.get_ref())
                         .await?;
                 Ok(HttpResponse::Ok().json(UserTypeResponse::from(updated_type)))
@@ -169,22 +161,23 @@ async fn delete_user_type(
     path: web::Path<i64>,
 ) -> Result<impl Responder, AppError> {
     let type_id = path.into_inner();
+    let mut tx = pool.begin().await?;
 
     // TODO: 해당 UserType을 사용하는 AdminUser가 있는지 확인하는 로직 추가 (ON DELETE RESTRICT 때문)
     let user_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM admin_user WHERE user_type_id = ?")
+        sqlx::query_scalar("SELECT COUNT(1) FROM admin_user WHERE user_type_id =?")
             .bind(type_id)
-            .fetch_one(pool.get_ref())
+            .fetch_one(&mut *tx)
             .await?;
 
     if user_count > 0 {
         return Err(AppError::conflict(
-            "Cannot delete user type: it is currently assigned to users.",
+            "Cannot delete a user type: it is currently assigned to users.",
         ));
     }
 
     let result = sqlx::query!("DELETE FROM user_type WHERE id = ?", type_id)
-        .execute(pool.get_ref())
+        .execute(&mut *tx)
         .await?;
 
     if result.rows_affected() == 0 {
@@ -201,18 +194,24 @@ async fn delete_user_type(
 #[get("/{type_id}/permissions")]
 async fn get_user_type_permissions(
     pool: web::Data<SqlitePool>,
-    _user: AuthenticatedUser, // TODO: RequirePermission("user_type:read") or specific
+    _user: AuthenticatedUser,
     path: web::Path<i64>,
 ) -> Result<impl Responder, AppError> {
     let type_id = path.into_inner();
     let permissions = sqlx::query_as!(
-        Permission, // Permission 모델 사용
-        r#"
-        SELECT p.id, p.code, p.description, p.created_at, p.updated_at
-        FROM permission p
-        JOIN user_type_permission utp ON p.id = utp.permission_id
-        WHERE utp.user_type_id = ?
-        "#,
+        Permission,
+        "SELECT 
+        p.id as id,
+        p.code as code,
+        p.description as description,
+        p.created_at as created_at,
+        p.updated_at as updated_at
+    FROM 
+        permission p
+    JOIN 
+        user_type_permission utp ON p.id = utp.permission_id 
+    WHERE 
+        utp.user_type_id = ? AND p.id IS NOT NULL",
         type_id
     )
     .fetch_all(pool.get_ref())
@@ -228,13 +227,11 @@ async fn get_user_type_permissions(
 #[post("/{type_id}/permissions/{permission_id}")]
 async fn add_permission_to_user_type(
     pool: web::Data<SqlitePool>,
-    _user: AuthenticatedUser, // TODO: RequirePermission("user_type:update") or specific
+    _user: AuthenticatedUser,
     path: web::Path<(i64, i64)>,
 ) -> Result<impl Responder, AppError> {
     let (type_id, permission_id) = path.into_inner();
     // TODO: type_id, permission_id 유효성 검사 (DB에 존재하는지)
-
-    // INSERT OR IGNORE: 이미 존재하면 무시하고 성공 처리
     sqlx::query!(
         "INSERT OR IGNORE INTO user_type_permission (user_type_id, permission_id) VALUES (?, ?)",
         type_id,
@@ -273,11 +270,9 @@ async fn remove_permission_from_user_type(
 pub fn configure_routes() -> Scope {
     web::scope("/user-types")
         .service(create_user_type)
-        .service(get_user_types)
         .service(get_user_type_by_id)
         .service(update_user_type)
         .service(delete_user_type)
-        .service(get_user_type_permissions)
         .service(add_permission_to_user_type)
         .service(remove_permission_from_user_type)
 }

@@ -1,4 +1,4 @@
-// src/utils.rs
+// src/util
 use crate::config::Config;
 use crate::errors::AppError;
 use bcrypt::{hash, verify, DEFAULT_COST};

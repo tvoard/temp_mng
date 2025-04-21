@@ -1,51 +1,62 @@
 use actix_cors::Cors;
-use actix_web::{http, middleware::{Condition, Logger}, web, App, HttpServer};
-use anyhow::Result;
+use actix_web::{http, middleware::Logger, web, App, HttpServer};
+use anyhow::{Context, Result};
 use dotenv::dotenv;
-use sqlx::SqlitePool;
+use sqlx::migrate::Migrator;
 use std::env;
+use std::path::Path;
+use std::sync::Arc;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 mod config;
 mod db;
-mod dtos;
+mod dto;
 mod errors;
-mod handlers;
+mod handler;
 mod middleware;
 mod models;
-mod utils;
-
-use crate::errors::AppError;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
-// AppError 임포트
+mod util;
 
 // --- API 문서 설정 (Utoipa) ---
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        handlers::health::health_check,
-        handlers::auth::login,
-        handlers::auth::get_current_user,
-        handlers::user::create_user,
-        handlers::user::get_users,
-        // 다른 핸들러 함수들 추가...
+        handler::health::health_check,
+        handler::auth::login,
+        handler::auth::get_current_user,
+        handler::user::create_user,
+        handler::user::get_users,
+        handler::user::get_user_by_id,
+        handler::user_type::create_user_type,
+        handler::user_type::get_user_types,
+        handler::user_type::get_user_type_by_id,
+        handler::user_type::update_user_type,
+        handler::user_type::delete_user_type,
+        handler::user_type::add_permission_to_user_type,
+        handler::user_type::remove_permission_from_user_type,
+        handler::permission::create_permission,
+        handler::permission::get_permissions,
+        handler::permission::get_permission_by_id,
+        handler::menu::create_menu,
+        handler::menu::get_menus,
     ),
     components(
         schemas(
-            // DTO 스키마들 추가
-            dtos::auth::LoginRequest, dtos::auth::LoginResponse, dtos::auth::CurrentUserResponse,
-            dtos::user::CreateUserRequest, dtos::user::UpdateUserRequest, dtos::user::UserResponse,
-            dtos::user_type::UserTypeResponse, // 예시
-            dtos::permission::PermissionResponse, // 예시
-            dtos::menu::MenuResponse, // 예시
-            // 에러 응답 스키마 (AppError의 ErrorResponse 구조 반영 필요 - 현재는 AppError 직접 사용)
-            errors::AppError,
-            models::UserType, models::AdminUser, models::Permission, models::MenuItem // 모델도 추가 가능
-        ),
-        security_schemes(
-            // JWT 보안 스키마 정의
-            (name = "bearer_auth", scheme = bearer, bearer_format = "JWT", type = http)
+            dto::auth::LoginRequest,
+            dto::auth::LoginResponse,
+            dto::auth::CurrentUserResponse,
+            dto::user::CreateUserRequest,
+            dto::user::UpdateUserRequest,
+            dto::user::UserResponse,
+            dto::user_type::UserTypeResponse,
+            dto::permission::PermissionResponse,
+            errors::ErrorResponse,
+            models::UserType,
+            models::AdminUser,
+            models::Permission,
+            models::MenuItem
         )
     ),
     tags(
@@ -62,28 +73,41 @@ use utoipa_swagger_ui::SwaggerUi;
 )]
 struct ApiDoc;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<()> {
     dotenv().ok();
+    tracing::info!("DATABASE_URL: {:?}", env::var("DATABASE_URL"));
+    tracing::info!("SERVER_ADDR: {:?}", env::var("SERVER_ADDR"));
 
     // 로깅/트레이싱 초기화 (RUST_LOG 또는 TRACING_LEVEL 환경 변수 사용)
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // 기본 레벨 info
     FmtSubscriber::builder().with_env_filter(filter).init();
 
-    let cfg = config::Config::from_env()?;
-    let pool = db::create_pool(&cfg.database_url).await?;
+    let cfg = Arc::new(config::Config::from_env()?);
+    let pool = db::create_pool(&cfg.database_url)
+        .await
+        .context("Failed to connect to the database")?;
 
     // 데이터베이스 마이그레이션 실행
     tracing::info!("Running database migrations...");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+    let migration_dir = env::var("MIGRATION_DIR").unwrap_or_else(|_| "./db".to_string());
+    let migrator = Migrator::new(Path::new(&migration_dir))
         .await
-        .expect("Failed to run database migrations");
+        .context("Failed to initialize database migrator")?;
+    if let Err(e) = migrator.run(&pool).await {
+        tracing::error!("Failed to run database migrations: {:?}", e);
+        return Err(e.into());
+    }
     tracing::info!("Database migrations completed.");
 
-    tracing::info!("Starting server at http://{}", cfg.server_addr);
+    let cloned_pool = pool.clone();
+    let cloned_cfg = Arc::clone(&cfg);
+
+    let server_addr = Arc::new(cfg.server_addr.clone());
+    tracing::info!("Starting server at http://{}", server_addr);
 
     let openapi = ApiDoc::openapi();
+    // handler::health::initialize_server_start_time();
 
     HttpServer::new(move || {
         // CORS 설정 (개발 중에는 관대하게, 프로덕션에서는 엄격하게)
@@ -99,30 +123,26 @@ async fn main() -> Result<()> {
             .max_age(3600);
 
         App::new()
-            // 상태 공유: 데이터베이스 풀, 설정값
-            .app_data(web::Data::new(pool.clone()))
-            .app_data(web::Data::new(cfg.clone()))
+            .app_data(web::Data::new(cloned_pool.clone()))
+            .app_data(web::Data::new(cloned_cfg.clone()))
             // 미들웨어 등록 (순서 중요)
             .wrap(cors) // CORS 먼저
-            .wrap(Condition::new(true, Logger::default())) // 로깅 (tracing으로 대체 가능)
-            // !!! 인증 미들웨어는 API 범위 내에서 적용 !!!
+            .wrap(Logger::default())
             // API 문서 서빙 (Swagger UI)
-            .service(
-                SwaggerUi::new("/swagger-ui/{_:.*}").url("/api-docs/openapi.json", openapi.clone()),
-            )
+            .service(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi.clone()))
             // API 라우팅 설정 (v1 네임스페이스)
             .service(
                 web::scope("/api/v1")
                     .wrap(middleware::auth::Authentication)
-                    .service(handlers::health::health_check) // 인증 불필요 (위치 조정 또는 미들웨어에서 경로 예외처리)
-                    .configure(handlers::auth::configure_routes)
-                    .configure(handlers::user::configure_routes)
-                    .configure(handlers::user_type::configure_routes) // 추가
-                    .configure(handlers::permission::configure_routes) // 추가
-                    .configure(handlers::menu::configure_routes), // 추가
+                    .service(handler::health::health_check) // 인증 불필요 (위치 조정 또는 미들웨어에서 경로 예외처리)
+                    .service(handler::auth::configure_routes())
+                    .service(handler::user::configure_routes())
+                    .service(handler::user_type::configure_routes())
+                    .service(handler::permission::configure_routes())
+                    .service(handler::menu::configure_routes()),
             )
     })
-    .bind(cfg.server_addr.clone())? // bind 전에 clone
+    .bind(server_addr.as_str())?
     .run()
     .await?;
 

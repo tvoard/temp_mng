@@ -1,18 +1,18 @@
 use crate::{
-    dtos::common::ListQueryParams,
-    dtos::user::{CreateUserRequest, UpdateUserRequest, UserResponse},
+    dto::common::ListQueryParams,
+    dto::user::{CreateUserRequest, UserResponse},
     errors::AppError,
-    middleware::auth::{AuthenticatedUser, RequirePermission},
+    errors::ErrorResponse,
+    middleware::auth::AuthenticatedUser,
     models::AdminUser,
-    utils::hash_password,
+    util::hash_password,
 };
-use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
+use actix_web::{get, post, web, HttpResponse, Responder, Scope};
 use sqlx::{Arguments, Row, SqlitePool};
 use utoipa;
 use validator::Validate;
 
 /// Create a new Admin User
-/// Requires 'user:create' permission.
 #[utoipa::path(
     post,
     path = "/api/v1/users",
@@ -39,7 +39,6 @@ async fn create_user(
     req.validate()?; // 입력값 유효성 검사
 
     // TODO: 실제로는 RequirePermission Extractor를 사용하는 것이 더 좋음
-    // 예: async fn create_user(..., _permit: RequirePermission("user:create"), ...)
 
     // 비밀번호 해싱
     let password_hash = hash_password(&req.password).await?;
@@ -137,7 +136,6 @@ async fn get_users(
 
     // 동적 쿼리 생성 (검색 기능 추가 시 더 복잡해짐)
     let base_query = "SELECT * FROM admin_user";
-    // 검색 조건 추가 예시 (간단한 username 검색)
     let mut conditions = Vec::new();
     let mut args = sqlx::sqlite::SqliteArguments::default(); // 인자 바인딩용
 
@@ -158,22 +156,30 @@ async fn get_users(
     );
     args.add(limit);
     args.add(offset);
-
-    // 쿼리 실행
     let users = sqlx::query_as_with::<_, AdminUser, _>(&query_str, args)
         .fetch_all(pool.get_ref())
         .await?;
 
     let user_responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
     Ok(HttpResponse::Ok().json(user_responses))
+}
 
-    // 실제로는 총 개수도 함께 반환하여 페이지네이션 정보 제공 필요
-    // let total_count = sqlx::query_scalar...
-    // Ok(HttpResponse::Ok().json(PaginatedResponse { data: user_responses, total: total_count }))
+#[utoipa::path(get, path = "/api/v1/users/{id}", tag = "User Management")]
+#[get("/{id}")]
+async fn get_user_by_id(
+    pool: web::Data<SqlitePool>,
+    _user: AuthenticatedUser, // TODO: RequirePermission("user:read") 적용
+    path: web::Path<i64>,
+) -> Result<impl Responder, AppError> {
+    let id = path.into_inner();
+    let user = sqlx::query_as!(AdminUser, "SELECT * FROM admin_user WHERE id = ?", id)
+        .fetch_one(pool.get_ref())
+        .await
+        .map_err(|_| AppError::NotFound("User not found".to_string()))?;
+    Ok(HttpResponse::Ok().json(UserResponse::from(user)))
 }
 
 // --- 기타 CRUD 핸들러 (get_user_by_id, update_user, delete_user) ---
-// 위의 create_user, get_users 패턴을 따라 구현
 // - 경로 파라미터 사용: web::Path<i64>
 // - 권한 검사 적용: RequirePermission("user:read"), RequirePermission("user:update"), RequirePermission("user:delete")
 // - 입력 유효성 검사: req.validate()?
@@ -182,11 +188,9 @@ async fn get_users(
 
 pub fn configure_routes() -> Scope {
     web::scope("/users")
-        // 여기에 RequirePermission 미들웨어 적용 가능 (web::scope(...).wrap(...))
-        // 또는 각 핸들러에 Extractor로 적용
-        .service(create_user) // POST /users
-        .service(get_users) // GET /users
-                            // .service(get_user_by_id) // GET /users/{id}
-                            // .service(update_user) // PUT /users/{id}
-                            // .service(delete_user) // DELETE /users/{id}
+        .service(create_user)
+        .service(get_users)
+        .service(get_user_by_id)
+    // .service(update_user) // PUT /users/{id}
+    // .service(delete_user) // DELETE /users/{id}
 }

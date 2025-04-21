@@ -1,21 +1,14 @@
-// src/handlers/menu.rs
 use crate::{
-    dtos::{
-        common::ListQueryParams,
-        menu::{CreateMenuRequest, MenuResponse, UpdateMenuRequest},
-    },
+    dto::menu::{CreateMenuRequest, MenuResponse},
     errors::AppError,
-    middleware::auth::{AuthenticatedUser, RequirePermission},
+    middleware::auth::AuthenticatedUser,
     models::MenuItem,
 };
-use actix_web::{delete, get, post, put, web, HttpResponse, Responder, Scope};
+use actix_web::{get, post, web, HttpResponse, Responder, Scope};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use utoipa;
 use validator::Validate;
-// 메뉴 계층 구조 빌드용
-
-// --- Menu CRUD ---
 
 /// Create a Menu Item
 #[utoipa::path(tag = "Menu Management")]
@@ -31,11 +24,25 @@ async fn create_menu(
     let display_order = req.display_order.unwrap_or(0);
     let is_visible = req.is_visible.unwrap_or(true);
 
-    let result = sqlx::query!(/* ... INSERT ... */)
+    let result = sqlx::query_as!(
+        MenuItem,
+        r#"
+        INSERT INTO menu_item (name, path, icon, parent_id, display_order, is_visible, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+        "#,
+        req.name,
+        req.path,
+        req.icon,
+        req.parent_id,
+        display_order,
+        is_visible
+    )
         .fetch_one(pool.get_ref())
-        .await;
-    // ... 에러 처리 및 성공 응답 ...
-    Ok(HttpResponse::Created().json(/* ... MenuResponse ... */))
+        .await?;
+
+    let menu_response = MenuResponse::from(result);
+    Ok(HttpResponse::Created().json(menu_response))
 }
 
 /// Get list of Menu Items (Hierarchical)
@@ -77,29 +84,34 @@ fn build_menu_tree(menus: Vec<MenuItem>) -> Vec<MenuResponse> {
     let all_ids: Vec<i64> = map.keys().cloned().collect(); // map 변경 중 순회 문제 방지
 
     for id in all_ids {
+        // 이미 처리된 노드는 건너뜀
         if processed_ids.contains(&id) {
             continue;
-        } // 이미 처리된 노드는 건너뜀
+        }
 
         if let Some(mut menu) = map.remove(&id) {
             // map에서 노드 소유권 가져오기
             processed_ids.insert(id);
-            if let Some(parent_id) = menu.parent_id {
-                if let Some(parent) = map.get_mut(&parent_id) {
-                    if parent.children.is_none() {
-                        parent.children = Some(Vec::new());
-                    }
-                    parent.children.as_mut().unwrap().push(menu); // 자식으로 추가
-                } else {
-                    // 부모가 map에 없는 경우 (데이터 오류 또는 부모가 먼저 처리됨)
-                    // 이 경우는 root로 간주하거나 에러 처리 가능
-                    menu.parent_id = None; // 루트로 만듦 (선택적)
-                    root_menus.push(menu);
-                }
-            } else {
-                // 부모 ID가 없으면 루트 메뉴
+
+            // 부모 ID가 없으면 루트 메뉴
+            if menu.parent_id.is_none() {
                 root_menus.push(menu);
+                continue;
             }
+
+            // 부모가 map에 없으면 루트로 간주
+            let parent_id = menu.parent_id.unwrap();
+            if map.get_mut(&parent_id).is_none() {
+                menu.parent_id = None;
+                root_menus.push(menu);
+                continue;
+            }
+
+            let parent = map.get_mut(&parent_id).unwrap();
+            if parent.children.is_none() {
+                parent.children = Some(Box::new(Vec::new()));
+            }
+            parent.children.as_mut().unwrap().push(menu); // 자식으로 추가
         }
     }
 

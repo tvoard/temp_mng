@@ -1,5 +1,6 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -29,7 +30,6 @@ pub struct UpdateUserRequest {
     pub user_type_id: Option<i64>,
     #[schema(example = false)]
     pub is_active: Option<bool>,
-    // 비밀번호 변경은 별도 API 권장 (현재 비밀번호 확인 등)
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -55,9 +55,11 @@ impl From<crate::models::AdminUser> for UserResponse {
             username: user.username,
             user_type_id: user.user_type_id,
             is_active: user.is_active,
-            last_login_at: user.last_login_at,
-            created_at: user.created_at,
-            updated_at: user.updated_at,
+            last_login_at: user
+                .last_login_at
+                .map(|ndt| Utc.from_utc_datetime(&ndt.into())),
+            created_at: Utc.from_utc_datetime(&user.created_at),
+            updated_at: Utc.from_utc_datetime(&user.updated_at),
         }
     }
 }

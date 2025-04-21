@@ -2,10 +2,19 @@ use actix_web::{
     http::{header, StatusCode},
     HttpResponse, ResponseError,
 };
-use http::HeaderValue;
 use serde::Serialize;
 use thiserror::Error;
+use utoipa::ToSchema;
 use validator::ValidationErrors;
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ErrorResponse {
+    code: u16,
+    error: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>, // Validation 에러 상세 정보
+}
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -40,13 +49,23 @@ pub enum AppError {
     InternalServerError(#[from] anyhow::Error), // anyhow::Error 처리 추가
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    code: u16,
-    error: String,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<serde_json::Value>, // Validation 에러 상세 정보
+// 편의 생성자
+impl AppError {
+    pub fn not_found(message: &str) -> Self {
+        AppError::NotFound(message.to_string())
+    }
+    pub fn bad_request(message: &str) -> Self {
+        AppError::BadRequest(message.to_string())
+    }
+    pub fn unauthorized(message: &str) -> Self {
+        AppError::Unauthorized(message.to_string())
+    }
+    pub fn forbidden(message: &str) -> Self {
+        AppError::Forbidden(message.to_string())
+    }
+    pub fn conflict(message: &str) -> Self {
+        AppError::Conflict(message.to_string())
+    }
 }
 
 impl ResponseError for AppError {
@@ -123,29 +142,9 @@ impl ResponseError for AppError {
         if status == StatusCode::UNAUTHORIZED {
             response.headers_mut().insert(
                 header::WWW_AUTHENTICATE,
-                HeaderValue::from_str("Bearer").unwrap(),
+                actix_web::http::header::HeaderValue::from_static("Bearer"),
             );
         }
         response
     }
-}
-
-// 편의 생성자
-impl AppError {
-    pub fn not_found(message: &str) -> Self {
-        AppError::NotFound(message.to_string())
-    }
-    pub fn bad_request(message: &str) -> Self {
-        AppError::BadRequest(message.to_string())
-    }
-    pub fn unauthorized(message: &str) -> Self {
-        AppError::Unauthorized(message.to_string())
-    }
-    pub fn forbidden(message: &str) -> Self {
-        AppError::Forbidden(message.to_string())
-    }
-    pub fn conflict(message: &str) -> Self {
-        AppError::Conflict(message.to_string())
-    }
-    // 필요시 다른 생성자 추가
 }

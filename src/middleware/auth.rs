@@ -1,9 +1,7 @@
-// src/middleware/auth.rs
 use crate::{
     config::Config,
     errors::AppError,
-    models::Permission, // 권한 모델 사용
-    utils::{validate_jwt, Claims},
+    util::{validate_jwt, Claims},
 };
 use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
@@ -17,7 +15,8 @@ use futures_util::{
     future::ready,
     future::{ok, FutureExt, LocalBoxFuture, Ready},
 };
-use sqlx::SqlitePool;
+use sqlx::{FromRow, SqlitePool};
+use std::cell::{Ref, RefCell};
 use std::{
     collections::HashSet,
     rc::Rc,
@@ -30,7 +29,47 @@ pub struct AuthenticatedUser {
     pub id: i64,
     pub user_type_id: i64,
     pub username: String,
-    pub permissions: Rc<HashSet<String>>, // 권한 코드 목록 (Rc로 복사 비용 절감)
+    pub permissions: Rc<HashSet<String>>, // 권한 코드 목록
+}
+
+// 핸들러에서 현재 사용자 정보를 얻기 위한 Extractor
+impl FromRequest for AuthenticatedUser {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(
+        req: &actix_web::HttpRequest,
+        _payload: &mut actix_web::dev::Payload,
+    ) -> Self::Future {
+        let authenticated_user = req.extensions().get::<AuthenticatedUser>().cloned();
+        match authenticated_user {
+            Some(user) => ok(user),
+            None => {
+                tracing::warn!("Attempted to access AuthenticatedUser in a context where it's not available (likely unauthenticated route or middleware issue).");
+                ready(Err(Error::from(AppError::unauthorized(
+                    "Not authenticated",
+                ))))
+            }
+        }
+    }
+}
+
+// 권한 확인을 위한 Extractor
+pub struct RequirePermission(pub &'static str);
+
+impl FromRequest for RequirePermission {
+    type Error = AppError;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &actix_web::HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
+        let authenticated_user = req.extensions().get::<AuthenticatedUser>().cloned();
+        match authenticated_user {
+            Some(user) => ready(Err(AppError::InternalServerError(anyhow::anyhow!(
+                "RequirePermission Extractor not fully implemented"
+            )))),
+            None => ready(Err(AppError::unauthorized("Authentication required"))),
+        }
+    }
 }
 
 // 인증 미들웨어 팩토리
@@ -50,14 +89,14 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         ok(AuthenticationMiddleware {
-            service: Rc::new(service),
+            service: Rc::new(RefCell::new(service)),
         })
     }
 }
 
 // 실제 인증 로직을 수행하는 미들웨어
 pub struct AuthenticationMiddleware<S> {
-    service: Rc<S>,
+    service: Rc<RefCell<S>>,
 }
 
 impl<S, B> Service<ServiceRequest> for AuthenticationMiddleware<S>
@@ -81,11 +120,11 @@ where
 
         async move {
             let config = config.ok_or_else(|| {
-                tracing::error!("Config not found in app_data");
+                tracing::error!("Config isn't found in app_data");
                 AppError::InternalServerError(anyhow::anyhow!("Server configuration error"))
             })?;
             let pool = pool.ok_or_else(|| {
-                tracing::error!("Database pool not found in app_data");
+                tracing::error!("Database pool isn't found in app_data");
                 AppError::InternalServerError(anyhow::anyhow!("Database connection error"))
             })?;
 
@@ -95,7 +134,7 @@ where
                 Ok(claims) => claims,
                 // 특정 경로는 인증 없이 허용 (예: 로그인, 회원가입, health check, swagger)
                 // 경로 기반으로 예외 처리 추가 필요
-                Err(e) if should_skip_auth(&req) => {
+                Err(_e) if should_skip_auth(&req) => {
                     // 인증 없이 다음 미들웨어/핸들러로 진행
                     return service.call(req).await;
                 }
@@ -155,32 +194,42 @@ fn extract_and_validate_token(
     validate_jwt(token, config)
 }
 
-// 사용자 종류 ID 기반 권한 조회
+#[derive(FromRow)]
+struct PermissionCode {
+    code: String,
+}
+
 async fn fetch_user_permissions(
     pool: &SqlitePool,
     user_type_id: i64,
 ) -> Result<HashSet<String>, AppError> {
     let permissions = sqlx::query_as!(
-        Permission,
+        PermissionCode,
         r#"
-        SELECT p.id, p.code, p.description, p.created_at, p.updated_at
+        SELECT p.code
         FROM permission p
         JOIN user_type_permission utp ON p.id = utp.permission_id
         WHERE utp.user_type_id = ?
+        LIMIT 1000  -- 안전장치
         "#,
         user_type_id
     )
     .fetch_all(pool)
-    .await?
+    .await
+    .map_err(|e| {
+        tracing::error!("권한 조회 실패: {}", e);
+        AppError::DatabaseError(e)
+    })?
     .into_iter()
     .map(|p| p.code)
     .collect::<HashSet<String>>();
 
+    if permissions.is_empty() {
+        tracing::warn!("사용자 타입 {}에 대한 권한이 없습니다", user_type_id);
+    }
+
     Ok(permissions)
 }
-
-// 권한 확인을 위한 Extractor
-pub struct RequirePermission(String); // 필요한 권한 코드
 
 pub struct EnsurePermission;
 
@@ -192,7 +241,6 @@ impl FromRequest for EnsurePermission {
         req: &actix_web::HttpRequest,
         _payload: &mut actix_web::dev::Payload,
     ) -> Self::Future {
-        // 요청 Extension에서 AuthenticatedUser 정보 가져오기
         let extensions = req.extensions();
         let user_data = extensions.get::<AuthenticatedUser>();
         let required_permission = &req.match_info().query("permission").to_string();
@@ -204,7 +252,7 @@ impl FromRequest for EnsurePermission {
                 {
                     // 권한 있음: Ok(Self) 반환 -> Actix가 핸들러 실행
                     tracing::debug!(
-                        "Permission granted for user {} to access '{}'",
+                        "Permission is granted for user {} to access '{}'",
                         user.username,
                         required_permission
                     );
@@ -212,7 +260,7 @@ impl FromRequest for EnsurePermission {
                 } else {
                     // 권한 없음: Err(Error) 반환 -> Actix가 403 Forbidden 응답
                     tracing::warn!(
-                        "Permission denied for user {} (ID: {}) attempting to access '{}'. User permissions: {:?}",
+                        "Permission is denied for user {} (ID: {}) attempting to access '{}'. User permissions: {:?}",
                         user.username, user.id, required_permission, user.permissions
                     );
                     ready(Err(Error::from(AppError::forbidden(
@@ -226,27 +274,6 @@ impl FromRequest for EnsurePermission {
                 ready(Err(Error::from(AppError::unauthorized(
                     "Authentication required",
                 )))) // Err 안에 actix_web::Error
-            }
-        }
-    }
-}
-
-// 핸들러에서 현재 사용자 정보를 얻기 위한 Extractor
-impl FromRequest for AuthenticatedUser {
-    type Error = Error;
-    type Future = Ready<Result<Self, Self::Error>>;
-
-    fn from_request(
-        req: &actix_web::HttpRequest,
-        _payload: &mut actix_web::dev::Payload,
-    ) -> Self::Future {
-        match req.extensions().get::<AuthenticatedUser>().cloned() {
-            Some(user) => ok(user),
-            None => {
-                tracing::warn!("Attempted to access AuthenticatedUser in a context where it's not available (likely unauthenticated route or middleware issue).");
-                ready(Err(Error::from(AppError::unauthorized(
-                    "Not authenticated",
-                ))))
             }
         }
     }

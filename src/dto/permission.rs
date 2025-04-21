@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -22,7 +22,7 @@ pub struct UpdatePermissionRequest {
 #[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct PermissionResponse {
     #[schema(example = 10)]
-    pub id: i64,
+    pub id: Option<i64>,
     #[schema(example = "report:generate")]
     pub code: String,
     #[schema(example = "Allows generating new reports")]
@@ -37,8 +37,8 @@ impl From<crate::models::Permission> for PermissionResponse {
             id: p.id,
             code: p.code,
             description: p.description,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
+            created_at: Utc.from_utc_datetime(&p.created_at),
+            updated_at: Utc.from_utc_datetime(&p.updated_at),
         }
     }
 }

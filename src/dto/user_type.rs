@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -26,7 +26,7 @@ pub struct UserTypeResponse {
     #[schema(example = "ReportViewer")]
     pub name: String,
     #[schema(example = "Can view generated reports")]
-    pub description: Option<String>,
+    pub description: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -36,9 +36,9 @@ impl From<crate::models::UserType> for UserTypeResponse {
         Self {
             id: ut.id,
             name: ut.name,
-            description: ut.description,
-            created_at: ut.created_at,
-            updated_at: ut.updated_at,
+            description: ut.description.unwrap_or("".to_string()),
+            created_at: Utc.from_utc_datetime(&ut.created_at),
+            updated_at: Utc.from_utc_datetime(&ut.updated_at),
         }
     }
 }

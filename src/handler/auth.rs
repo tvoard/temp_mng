@@ -1,19 +1,19 @@
-// src/handlers/auth.rs
 use crate::{
     config::Config,
-    dtos::auth::{CurrentUserResponse, LoginRequest, LoginResponse},
+    dto::auth::{CurrentUserResponse, LoginRequest, LoginResponse},
+    dto::user_type::UserTypeResponse,
     errors::AppError,
-    middleware::auth::AuthenticatedUser, // 현재 사용자 정보 Extractor
+    errors::ErrorResponse,
+    middleware::auth::AuthenticatedUser,
     models::AdminUser,
-    utils::{create_jwt, verify_password},
+    util::{create_jwt, verify_password},
 };
 use actix_web::{get, post, web, HttpResponse, Responder, Scope};
+use chrono::{TimeZone, Utc};
 use sqlx::SqlitePool;
 use utoipa;
 use validator::Validate;
 
-/// User Login
-///
 /// Authenticates a user and returns a JWT access token.
 #[utoipa::path(
     post,
@@ -28,16 +28,26 @@ use validator::Validate;
     tag = "Authentication"
 )]
 #[post("/login")]
-async fn login(
+pub async fn login(
     pool: web::Data<SqlitePool>,
     config: web::Data<Config>,
     req: web::Json<LoginRequest>,
 ) -> Result<impl Responder, AppError> {
-    req.validate()?; // 입력값 유효성 검사
+    req.validate()?;
 
     let user = sqlx::query_as!(
         AdminUser,
-        "SELECT * FROM admin_user WHERE username = ?",
+        r#"SELECT
+            id as "id!",
+            username as "username!",
+            password_hash as "password_hash!",
+            user_type_id,
+            is_active as "is_active!",
+            last_login_at,
+            created_at as "created_at!",
+            updated_at as "updated_at!"
+        FROM admin_user
+        WHERE username = ?"#,
         req.username
     )
     .fetch_optional(pool.get_ref())
@@ -56,7 +66,6 @@ async fn login(
     // 로그인 성공, JWT 생성
     let token = create_jwt(user.id, user.user_type_id, &user.username, &config)?;
 
-    // 마지막 로그인 시간 업데이트 (오류 무시 가능)
     let _ = sqlx::query!(
         "UPDATE admin_user SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
         user.id
@@ -87,18 +96,24 @@ async fn login(
     tag = "Authentication"
 )]
 #[get("/me")]
-async fn get_current_user(
+pub async fn get_current_user(
     pool: web::Data<SqlitePool>,     // DB 풀 추가 (UserType 정보 조회용)
     current_user: AuthenticatedUser, // 미들웨어에서 주입된 사용자 정보
 ) -> Result<impl Responder, AppError> {
     // 사용자 종류 정보 조회 (선택적)
-    let user_type_info = sqlx::query_as!(
-        UserTypeResponse, // UserTypeResponse DTO 사용
+    let user_type_info = sqlx::query!(
         "SELECT id, name, description, created_at, updated_at FROM user_type WHERE id = ?",
         current_user.user_type_id
     )
     .fetch_optional(pool.get_ref())
-    .await?;
+    .await?
+    .map(|record| UserTypeResponse {
+        id: record.id,
+        name: record.name,
+        description: record.description.unwrap_or_else(|| "".to_string()),
+        created_at: Utc.from_utc_datetime(&record.created_at),
+        updated_at: Utc.from_utc_datetime(&record.updated_at),
+    });
 
     let response = CurrentUserResponse {
         id: current_user.id,
@@ -107,6 +122,7 @@ async fn get_current_user(
         user_type: user_type_info,
         permissions: current_user.permissions.iter().cloned().collect(), // HashSet -> Vec
     };
+
     Ok(HttpResponse::Ok().json(response))
 }
 

@@ -32,5 +32,4 @@ pub struct CurrentUserResponse {
     pub user_type: Option<super::user_type::UserTypeResponse>, // 사용자 종류 정보 포함 가능
     #[schema()]
     pub permissions: Vec<String>,               // 사용자 종류에 부여된 권한 코드 목록
-                                                               // 필요시 메뉴 정보도 포함 가능
 }

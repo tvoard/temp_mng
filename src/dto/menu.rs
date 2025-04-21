@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -34,7 +34,7 @@ pub struct UpdateMenuRequest {
     pub is_visible: Option<bool>,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Serialize, ToSchema)]
 pub struct MenuResponse {
     #[schema(example = 5)]
     pub id: i64,
@@ -47,13 +47,13 @@ pub struct MenuResponse {
     #[schema(example = 1, value_type = Option<i64>)]
     pub parent_id: Option<i64>,
     #[schema(example = 99)]
-    pub display_order: i32,
+    pub display_order: i64,
     #[schema(example = true)]
     pub is_visible: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")] // 재귀적으로 자식 메뉴 포함 시 사용
-    pub children: Option<Vec<MenuResponse>>,
+    #[schema(ignore)]
+    pub children: Option<Box<Vec<MenuResponse>>>, // Box로 감싸기
 }
 
 impl From<crate::models::MenuItem> for MenuResponse {
@@ -66,8 +66,8 @@ impl From<crate::models::MenuItem> for MenuResponse {
             parent_id: m.parent_id,
             display_order: m.display_order,
             is_visible: m.is_visible,
-            created_at: m.created_at,
-            updated_at: m.updated_at,
+            created_at: Utc.from_utc_datetime(&m.created_at),
+            updated_at: Utc.from_utc_datetime(&m.updated_at),
             children: None, // 기본적으로 None, 필요시 별도 로직으로 채움
         }
     }
