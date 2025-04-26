@@ -1,5 +1,4 @@
-// src/util
-use crate::config::Config;
+use crate::config::env;
 use crate::errors::AppError;
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Duration, Utc};
@@ -49,7 +48,7 @@ pub fn create_jwt(
     user_id: i64,
     user_type_id: i64,
     username: &str,
-    config: &Config,
+    config: &env::Env,
 ) -> Result<String, AppError> {
     let expiration = Utc::now()
         .checked_add_signed(Duration::seconds(config.jwt_expires_in_seconds))
@@ -73,7 +72,7 @@ pub fn create_jwt(
 }
 
 // JWT 검증 및 Claims 반환
-pub fn validate_jwt(token: &str, config: &Config) -> Result<Claims, AppError> {
+pub fn validate_jwt(token: &str, config: &env::Env) -> Result<Claims, AppError> {
     let validation = Validation::new(Algorithm::HS256);
     // validation 설정 추가 가능 (e.g., audience, issuer)
 

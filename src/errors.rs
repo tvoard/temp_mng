@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use validator::ValidationErrors;
 
 #[derive(Serialize, ToSchema)]
-pub(crate) struct ErrorResponse {
+pub struct ErrorResponse {
     code: u16,
     error: String,
     message: String,

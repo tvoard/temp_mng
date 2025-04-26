@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod common;
+pub mod health;
+pub mod menu;
+pub mod permission;
 pub mod user;
-pub(crate) mod user_type;
-pub(crate) mod permission;
-pub(crate) mod menu;
+pub mod user_type;

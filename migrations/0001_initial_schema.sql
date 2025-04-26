@@ -119,6 +119,5 @@ VALUES (1, 1);
 INSERT INTO user_type_menu (user_type_id, menu_item_id)
 VALUES (1, 1);
 
--- 예시 관리자 (bcrypt 해싱된 비밀번호 사용 - 실제로는 API 통해 생성)
--- 'password123' 해시 예시 (실제로는 프로그램에서 생성된 해시 사용)
--- INSERT INTO admin_user (username, password_hash, user_type_id) VALUES ('admin', '$2b$12$your_bcrypt_hash_here', 1);
+-- 'password123' 해시 예시
+INSERT INTO admin_user (username, password_hash, user_type_id) VALUES ('admin', '$2b$12$5ONiULm9P4oefANo/NYCguK4W4NdKYgoAbKFl9X5iqaMZeS7IfWqy', 1);

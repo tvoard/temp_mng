@@ -16,10 +16,10 @@ pub struct CreateUserTypeRequest {
 pub struct UpdateUserTypeRequest {
     #[validate(length(min = 1, message = "Name cannot be empty"))]
     pub name: Option<String>,
-    pub description: Option<String>, // description은 null로 업데이트 가능하게 Option<Option<String>> 고려 가능
+    pub description: Option<String>, // Option<Option<String>> 고려 가능
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)] // Clone 추가
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct UserTypeResponse {
     #[schema(example = 3)]
     pub id: i64,

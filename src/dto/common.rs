@@ -17,7 +17,7 @@ pub struct ListQueryParams {
 
 impl ListQueryParams {
     pub fn get_limit(&self) -> i64 {
-        self.limit.unwrap_or(20).max(1).min(100) // 기본값 20, 최소 1, 최대 100
+        self.limit.unwrap_or(20).clamp(1, 100) // 기본값 20, 최소 1, 최대 100
     }
 
     pub fn get_offset(&self) -> i64 {

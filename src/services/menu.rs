@@ -1,26 +1,22 @@
+use std::collections::HashMap;
+
 use crate::{
     dto::menu::{CreateMenuRequest, MenuResponse},
     errors::AppError,
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::authenticated_user::AuthenticatedUser,
     models::MenuItem,
 };
-use actix_web::{get, post, web, HttpResponse, Responder, Scope};
+use actix_web::web;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
-use utoipa;
 use validator::Validate;
 
-/// Create a Menu Item
-#[utoipa::path(tag = "Menu Management")]
-#[post("")]
-async fn create_menu(
+pub async fn create_menu(
     pool: web::Data<SqlitePool>,
-    _user: AuthenticatedUser, // TODO: RequirePermission("menu:create") 적용
+    _user: AuthenticatedUser,
     req: web::Json<CreateMenuRequest>,
-) -> Result<impl Responder, AppError> {
+) -> Result<MenuResponse, AppError> {
     req.validate()?;
-    // TODO: parent_id 유효성 검사 (존재하는 menu_item.id인지)
-    // ... 생성 로직 ...
+
     let display_order = req.display_order.unwrap_or(0);
     let is_visible = req.is_visible.unwrap_or(true);
 
@@ -41,19 +37,25 @@ async fn create_menu(
         .fetch_one(pool.get_ref())
         .await?;
 
-    let menu_response = MenuResponse::from(result);
-    Ok(HttpResponse::Created().json(menu_response))
+    Ok(MenuResponse::from(result))
 }
 
-/// Get list of Menu Items (Hierarchical)
-/// Returns menu items structured as a tree based on parent_id.
-#[utoipa::path(tag = "Menu Management")]
-#[get("")]
-async fn get_menus(
+/// Fetches all menu items from the database, ordered by display_order,
+/// and converts them into a hierarchical structure of `MenuResponse`.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the SqlitePool for database access.
+/// * `_user` - The authenticated user making the request. Currently unused.
+///
+/// # Returns
+///
+/// * `Result<Vec<MenuResponse>, AppError>` - On success, returns a vector of `MenuResponse`
+///   representing the menu items in a hierarchical tree structure. Returns `AppError` on failure.
+pub async fn get_menu_array(
     pool: web::Data<SqlitePool>,
-    _user: AuthenticatedUser, // TODO: RequirePermission("menu:read") 적용
-                              // query: web::Query<ListQueryParams>, // 페이지네이션 대신 전체 계층 구조 반환
-) -> Result<impl Responder, AppError> {
+    _user: AuthenticatedUser,
+) -> Result<Vec<MenuResponse>, AppError> {
     // 모든 메뉴 항목 조회 (display_order 순으로)
     let all_menus = sqlx::query_as!(
         MenuItem,
@@ -63,9 +65,7 @@ async fn get_menus(
     .await?;
 
     // 계층 구조로 변환
-    let menu_tree = build_menu_tree(all_menus);
-
-    Ok(HttpResponse::Ok().json(menu_tree))
+    Ok(build_menu_tree(all_menus))
 }
 
 // 메뉴 계층 구조 빌드 헬퍼 함수
@@ -137,15 +137,4 @@ fn sort_menu_children_recursive(menus: &mut Vec<MenuResponse>) {
             sort_menu_children_recursive(children);
         }
     }
-}
-
-// Get Menu by ID (구현 필요)
-// Update Menu (구현 필요, parent_id 변경 시 순환 참조 방지 로직 필요)
-// Delete Menu (구현 필요, 자식 메뉴 처리 방식 결정 필요 - CASCADE, SET NULL 등)
-
-pub fn configure_routes() -> Scope {
-    web::scope("/menus").service(create_menu).service(get_menus) // 계층 구조 반환 API
-                                                                 // .service(get_menu_by_id)
-                                                                 // .service(update_menu)
-                                                                 // .service(delete_menu)
 }
